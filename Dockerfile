@@ -1,10 +1,13 @@
-FROM public.ecr.aws/lambda/python:3.11
+FROM python:3.11-slim
+
+WORKDIR /app
 
 COPY requirements.txt ./
 RUN python -m pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt gunicorn
 
 COPY main.py ./
 COPY app/ ./app/
 
-CMD [ "main.lambda_handler" ]
+EXPOSE 8080
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "main:app"]

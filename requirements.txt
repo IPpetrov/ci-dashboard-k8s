@@ -1,6 +1,5 @@
-Flask==2.2.5
-requests==2.31.0
-aws-wsgi
+Flask
+requests
 pytest
 werkzeug<3.0.0
 Flask-Caching
