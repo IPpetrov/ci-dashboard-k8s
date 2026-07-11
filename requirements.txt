@@ -3,3 +3,4 @@ requests
 pytest
 werkzeug<3.0.0
 Flask-Caching
+prometheus-flask-exporter
