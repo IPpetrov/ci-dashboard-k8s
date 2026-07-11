@@ -1,100 +1,68 @@
-name: Deploy to AWS Lambda via ECR
-
+name: Build and Deploy to Kubernetes via ArgoCD
 on:
   push:
     branches: [main]
 
 jobs:
-  deploy:
+  build-and-push:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+      - name: Checkout app code
+        uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.11"
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
 
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Run tests
-      run: pytest
+      - name: Run tests
+        run: pytest
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v2
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Log in to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
-      with:
-        mask-password: true
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+        with:
+          mask-password: true
 
-    - name: Build, tag, and push image to ECR
-      env:
-        ECR_REPO: ${{ secrets.ECR_REPO }}
-      run: |
-        IMAGE_TAG=latest
-        docker build -t $ECR_REPO:$IMAGE_TAG .
-        docker push $ECR_REPO:$IMAGE_TAG
+      - name: Build, tag, and push image to ECR
+        env:
+          ECR_REPO: ${{ secrets.ECR_REPO_K8S }}
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t $ECR_REPO:$IMAGE_TAG .
+          docker push $ECR_REPO:$IMAGE_TAG
 
-    - name: Update Lambda function with new image
-      env:
-        FUNCTION_NAME: ${{ secrets.LAMBDA_FUNCTION_NAME }}
-        ECR_REPO: ${{ secrets.ECR_REPO }}
-        AWS_REGION: ${{ secrets.AWS_REGION }}
-      run: |
-        aws lambda update-function-code \
-          --function-name $FUNCTION_NAME \
-          --image-uri $ECR_REPO:latest \
-          --region $AWS_REGION
+      - name: Checkout chart repo
+        uses: actions/checkout@v3
+        with:
+          repository: IPpetrov/ci-dashboard-chart
+          token: ${{ secrets.CHART_REPO_PAT }}
+          path: chart-repo
 
-    - name: Check health endpoint
-      run: |
-        curl -f https://102irwqmk0.execute-api.eu-central-1.amazonaws.com/health || exit 1
+      - name: Bump image tag in values.yaml
+        env:
+          ECR_REPO: ${{ secrets.ECR_REPO_K8S }}
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          yq -i ".image.repository = \"${ECR_REPO}\" | .image.tag = \"${IMAGE_TAG}\" | .image.pullPolicy = \"IfNotPresent\"" chart-repo/values.yaml
 
-    - name: Notify via Email on Success
-      if: success()
-      run: |
-        python - <<EOF
-        import smtplib
-        from email.message import EmailMessage
-
-        msg = EmailMessage()
-        msg["Subject"] = "Lambda Deployment Successful"
-        msg["From"] = "${{ secrets.EMAIL_ADDRESS }}"
-        msg["To"] = "${{ secrets.EMAIL_ADDRESS }}"
-        msg.set_content("Your AWS Lambda function '${{ secrets.LAMBDA_FUNCTION_NAME }}' was deployed successfully.")
-
-        with smtplib.SMTP("${{ secrets.EMAIL_HOST }}", ${{ secrets.EMAIL_PORT }}) as server:
-            server.starttls()
-            server.login("${{ secrets.EMAIL_ADDRESS }}", "${{ secrets.EMAIL_PASSWORD }}")
-            server.send_message(msg)
-        EOF
-
-    - name: Notify via Email on Failure
-      if: failure()
-      run: |
-        python - <<EOF
-        import smtplib
-        from email.message import EmailMessage
-
-        msg = EmailMessage()
-        msg["Subject"] = "Lambda Deployment Failed"
-        msg["From"] = "${{ secrets.EMAIL_ADDRESS }}"
-        msg["To"] = "${{ secrets.EMAIL_ADDRESS }}"
-        msg.set_content("Deployment of '${{ secrets.LAMBDA_FUNCTION_NAME }}' failed during GitHub Actions CI/CD.")
-
-        with smtplib.SMTP("${{ secrets.EMAIL_HOST }}", ${{ secrets.EMAIL_PORT }}) as server:
-            server.starttls()
-            server.login("${{ secrets.EMAIL_ADDRESS }}", "${{ secrets.EMAIL_PASSWORD }}")
-            server.send_message(msg)
-        EOF
+      - name: Commit and push chart update
+        run: |
+          cd chart-repo
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add values.yaml
+          git commit -m "deploy: image ${{ github.sha }}"
+          git push
